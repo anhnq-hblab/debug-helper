@@ -10,7 +10,8 @@
     "tabs",
     "sidePanel",
     "alarms",
-    "tabCapture"
+    "tabCapture",
+    "desktopCapture"
   ],
   "background": {
     "service_worker": "background/service-worker.js"

@@ -106,6 +106,10 @@ function getFilters() {
   document.querySelectorAll('#export-filters input[data-filter]').forEach(cb => {
     filters[cb.dataset.filter] = cb.checked;
   });
+  // Network mode: 3-state select mapped onto legacy booleans for export.js
+  const networkMode = document.getElementById('network-mode')?.value || 'errors';
+  filters.network = networkMode !== 'off';
+  filters.networkErrorsOnly = networkMode === 'errors';
   return filters;
 }
 

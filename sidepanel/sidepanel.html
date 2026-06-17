@@ -38,6 +38,7 @@
       <button id="btn-add-note" class="btn btn-sm btn-primary">Add</button>
       <button id="btn-feed-capture" class="btn btn-sm" title="Capture screenshot">Capture</button>
       <button id="btn-video" class="btn btn-sm btn-video" title="Record tab video">Video</button>
+      <button id="btn-video-desktop" class="btn btn-sm btn-video" title="Record desktop / window / tab with system picker">🖥️</button>
     </div>
 
     <section id="tab-feed" class="tab-content active">
@@ -67,9 +68,14 @@
         </div>
         <div class="filter-section">
           <div class="filter-section-title">Network</div>
-          <label><input type="checkbox" data-filter="network" checked> Include network</label>
-          <label><input type="checkbox" data-filter="networkErrorsOnly" checked> Errors only (4xx/5xx)</label>
-                  </div>
+          <label>Requests:
+            <select id="network-mode" class="filter-select">
+              <option value="errors" selected>Errors only (4xx/5xx)</option>
+              <option value="all">All requests</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
+        </div>
         <div class="filter-section">
           <div class="filter-section-title">Clean up</div>
           <label><input type="checkbox" data-filter="dedup" checked> Deduplicate rapid clicks</label>

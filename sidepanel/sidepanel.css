@@ -345,6 +345,16 @@ header h1 { font-size: 14px; }
   margin: 0;
 }
 
+.filter-select {
+  background: var(--bg-secondary, #2a2a2a);
+  color: var(--text-primary, #eee);
+  border: 1px solid var(--border, #444);
+  border-radius: 3px;
+  padding: 2px 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
 .export-controls {
   display: flex;
   gap: 8px;

@@ -445,22 +445,14 @@ let videoRecorder = null;
 let videoChunks = [];
 let videoStream = null;
 let videoSessionId = null; // capture session ID at recording start
+let videoSourceKind = null; // 'tab' or 'desktop' — tracks which button owns the active recording
 
-async function startVideoRecording() {
-  const btn = $('#btn-video');
-  if (!activeSessionId) {
-    btn.textContent = 'Record first';
-    setTimeout(() => { btn.textContent = 'Video'; }, 1500);
-    return;
-  }
-  try {
+// Acquire a MediaStream for the given source kind. Resolves with the stream.
+async function acquireVideoStream(sourceKind) {
+  if (sourceKind === 'tab') {
     const result = await send({ type: 'video:streamId' });
-    if (result?.error) {
-      btn.textContent = 'Failed';
-      setTimeout(() => { btn.textContent = 'Video'; }, 1500);
-      return;
-    }
-    videoStream = await navigator.mediaDevices.getUserMedia({
+    if (result?.error) throw new Error(result.error);
+    return await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
         mandatory: {
@@ -469,6 +461,50 @@ async function startVideoRecording() {
         }
       }
     });
+  }
+  // 'desktop' — show Chrome's native picker (screen / window / tab)
+  const streamId = await new Promise((resolve, reject) => {
+    chrome.desktopCapture.chooseDesktopMedia(
+      ['screen', 'window', 'tab'],
+      null,
+      (id) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (!id) {
+          reject(new Error('Picker cancelled'));
+          return;
+        }
+        resolve(id);
+      }
+    );
+  });
+  return await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      mandatory: {
+        chromeMediaSource: 'desktop',
+        chromeMediaSourceId: streamId,
+      }
+    }
+  });
+}
+
+async function startVideoRecording(sourceKind = 'tab') {
+  const btn = sourceKind === 'desktop' ? $('#btn-video-desktop') : $('#btn-video');
+  if (!activeSessionId) {
+    btn.textContent = 'Record first';
+    setTimeout(() => { btn.textContent = sourceKind === 'desktop' ? '🖥️' : 'Video'; }, 1500);
+    return;
+  }
+  // Prevent starting a second recording on top of one in progress
+  if (videoRecorder && videoRecorder.state === 'recording') {
+    return;
+  }
+  try {
+    videoStream = await acquireVideoStream(sourceKind);
+    videoSourceKind = sourceKind;
     videoChunks = [];
     videoSessionId = currentSessionId;
     videoRecorder = new MediaRecorder(videoStream, { mimeType: 'video/webm;codecs=vp9' });
@@ -540,16 +576,27 @@ async function startVideoRecording() {
     btn.classList.add('recording-video');
   } catch (err) {
     console.error('[Debug Helper] Video recording failed:', err);
-    btn.textContent = 'Failed';
-    setTimeout(() => { btn.textContent = 'Video'; }, 1500);
+    if (err.message === 'Picker cancelled') {
+      // user dismissed the native picker — restore the button quietly
+      btn.textContent = sourceKind === 'desktop' ? '🖥️' : 'Video';
+    } else {
+      btn.textContent = 'Failed';
+      setTimeout(() => { btn.textContent = sourceKind === 'desktop' ? '🖥️' : 'Video'; }, 1500);
+    }
   }
 }
 
 // Returns a promise that resolves after onstop handler completes
 function stopVideoRecording() {
-  const btn = $('#btn-video');
-  btn.textContent = 'Saving...';
-  btn.classList.remove('recording-video');
+  const tabBtn = $('#btn-video');
+  const desktopBtn = $('#btn-video-desktop');
+  const activeBtn = videoSourceKind === 'desktop' ? desktopBtn : tabBtn;
+  activeBtn.textContent = 'Saving...';
+  activeBtn.classList.remove('recording-video');
+  const restoreBtn = () => {
+    activeBtn.textContent = videoSourceKind === 'desktop' ? '🖥️' : 'Video';
+    videoSourceKind = null;
+  };
   return new Promise((resolve) => {
     if (videoRecorder && videoRecorder.state !== 'inactive') {
       const origOnStop = videoRecorder.onstop;
@@ -562,7 +609,7 @@ function stopVideoRecording() {
           videoStream = null;
         }
         videoRecorder = null;
-        btn.textContent = 'Video';
+        restoreBtn();
         resolve();
       };
       videoRecorder.stop();
@@ -572,17 +619,25 @@ function stopVideoRecording() {
         videoStream = null;
       }
       videoRecorder = null;
-      btn.textContent = 'Video';
+      restoreBtn();
       resolve();
     }
   });
 }
 
 $('#btn-video').addEventListener('click', () => {
-  if (videoRecorder && videoRecorder.state === 'recording') {
+  if (videoRecorder && videoRecorder.state === 'recording' && videoSourceKind === 'tab') {
     stopVideoRecording();
   } else {
-    startVideoRecording();
+    startVideoRecording('tab');
+  }
+});
+
+$('#btn-video-desktop').addEventListener('click', () => {
+  if (videoRecorder && videoRecorder.state === 'recording' && videoSourceKind === 'desktop') {
+    stopVideoRecording();
+  } else {
+    startVideoRecording('desktop');
   }
 });
 
@@ -851,6 +906,10 @@ function getExportFilters() {
   $$('#tab-export .filter-section input[data-filter]').forEach(cb => {
     filters[cb.dataset.filter] = cb.checked;
   });
+  // Network mode: 3-state select mapped onto legacy booleans for export.js
+  const networkMode = $('#network-mode')?.value || 'errors';
+  filters.network = networkMode !== 'off';
+  filters.networkErrorsOnly = networkMode === 'errors';
   return filters;
 }
 
