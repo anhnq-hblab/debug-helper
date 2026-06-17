@@ -906,10 +906,14 @@ function getExportFilters() {
   $$('#tab-export .filter-section input[data-filter]').forEach(cb => {
     filters[cb.dataset.filter] = cb.checked;
   });
-  // Network mode: 3-state select mapped onto legacy booleans for export.js
-  const networkMode = $('#network-mode')?.value || 'errors';
-  filters.network = networkMode !== 'off';
-  filters.networkErrorsOnly = networkMode === 'errors';
+  // Map 2 checkboxes (errorsOnly, allRequests) onto legacy booleans for export.js.
+  // "All" wins if both are checked (it's a superset). Both unchecked = no network.
+  const all = !!filters.allRequests;
+  const errors = !!filters.errorsOnly;
+  delete filters.allRequests;
+  delete filters.errorsOnly;
+  filters.network = all || errors;
+  filters.networkErrorsOnly = errors && !all;
   return filters;
 }
 

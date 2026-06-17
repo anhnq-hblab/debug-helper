@@ -86,16 +86,6 @@ h1 {
   margin: 0;
 }
 
-.export-filters .filter-select {
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 1px 4px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
 .export-result {
   margin-bottom: 10px;
 }

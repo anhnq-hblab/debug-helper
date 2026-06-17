@@ -30,13 +30,8 @@
       <label><input type="checkbox" data-filter="steps" checked> Steps</label>
       <label><input type="checkbox" data-filter="console" checked> Console</label>
       <label><input type="checkbox" data-filter="screenshots" checked> Screenshots</label>
-      <label>Network:
-        <select id="network-mode" class="filter-select">
-          <option value="errors" selected>Errors only</option>
-          <option value="all">All requests</option>
-          <option value="off">Off</option>
-        </select>
-      </label>
+      <label><input type="checkbox" data-filter="errorsOnly" checked> Errors only (4xx/5xx)</label>
+      <label><input type="checkbox" data-filter="allRequests"> All requests</label>
       <label><input type="checkbox" data-filter="dedup" checked> Dedup clicks</label>
       <label><input type="checkbox" data-filter="skipScrollZero" checked> Skip scroll-0</label>
       <label><input type="checkbox" data-filter="screenshotAsFile" checked> Screenshots as files</label>
