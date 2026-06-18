@@ -319,13 +319,27 @@ const SW = {
       }
     }
 
+    // "All requests" mode → dump full bodies to a separate markdown file.
+    // The main report renders a link instead of the list (see generateMarkdown).
+    let networkFile = null;
+    if (f.network && !f.networkErrorsOnly && data.debugReport.networkRequests?.length > 0) {
+      const fullRequests = data.debugReport.networkRequests;
+      networkFile = 'network-requests.md';
+      entries.push({
+        name: networkFile,
+        data: Export.generateNetworkMarkdown(fullRequests, {
+          url: data.debugReport.url,
+        }),
+      });
+    }
+
     // Remove internal fields before serializing
     delete data.debugReport._screenshotFiles;
     delete data.debugReport._videoFiles;
 
     // Report file
     if (format === 'markdown') {
-      const md = await Export.generateMarkdown(sessionId, f);
+      const md = await Export.generateMarkdown(sessionId, f, { networkFile });
       entries.push({ name: `debug-report.md`, data: md });
     } else if (format === 'toon') {
       const report = { ...data.debugReport };
