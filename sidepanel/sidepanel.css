@@ -136,6 +136,193 @@ header h1 { font-size: 14px; }
 
 .note-bar input:focus { border-color: var(--primary); }
 
+/* Range selection banner (appears below note-bar when range is active) */
+.range-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: #e0f2fe;
+  font-size: 12px;
+}
+
+.range-bar.hidden { display: none; }
+
+.range-bar .range-info {
+  flex: 1;
+  color: var(--text-primary);
+}
+
+.range-bar .range-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* Highlight events that fall within the selected range */
+.event-item.in-range {
+  background: rgba(56, 189, 248, 0.06);
+  border-left: 2px solid #0ea5e9;
+}
+
+.event-item:not(.in-range) {
+  opacity: 0.45;
+}
+
+/* Range endpoint markers — Start (left) and End (right) */
+.event-item.range-start {
+  border-left: 3px solid #16a34a !important;
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.event-item.range-end {
+  border-right: 3px solid #dc2626 !important;
+  background: rgba(220, 38, 38, 0.08);
+}
+
+.range-marker {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  color: white;
+  vertical-align: middle;
+}
+
+.range-marker-start { background: #16a34a; }
+.range-marker-end   { background: #dc2626; }
+
+/* Network error highlighting — 4xx, 5xx, and status 0 (network failure) */
+.event-item.event-error-network {
+  background: rgba(220, 38, 38, 0.06);
+  border-left: 3px solid #dc2626;
+}
+
+.event-item.event-error-network .badge {
+  background: #dc2626 !important;
+  color: white;
+}
+
+.event-item.event-error-network .time {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+/* Range action buttons — visible on hover so feed stays scannable,
+   or always when this event is a range endpoint */
+.event-range-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.event-item:hover .event-range-actions,
+.event-range-actions:focus-within,
+.event-item.range-endpoint .event-range-actions {
+  opacity: 1;
+}
+
+/* Banner inside Export tab showing the active range */
+.export-range-banner {
+  padding: 6px 12px;
+  background: #e0f2fe;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.export-range-banner.hidden { display: none; }
+
+/* Range timeline — visual range selector (like DevTools Network) */
+.range-timeline {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--border);
+  gap: 4px;
+}
+
+.range-timeline.hidden { display: none; }
+
+.range-timeline .timeline-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-family: monospace;
+}
+
+.range-timeline .timeline-track {
+  position: relative;
+  height: 32px;
+  background: #e2e8f0;
+  border-radius: 3px;
+  cursor: crosshair;
+}
+
+.range-timeline .timeline-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.range-timeline .timeline-tick {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: #64748b;
+  opacity: 0.4;
+}
+
+.range-timeline .timeline-tick.event-dom { background: #2563eb; }
+.range-timeline .timeline-tick.event-console { background: #d97706; }
+.range-timeline .timeline-tick.event-network { background: #059669; }
+.range-timeline .timeline-tick.event-note { background: #7c3aed; }
+.range-timeline .timeline-tick.event-screenshot { background: #db2777; }
+.range-timeline .timeline-tick.event-video { background: #dc2626; }
+
+.range-timeline .timeline-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(14, 165, 233, 0.15);
+  border-left: 1px solid #0ea5e9;
+  border-right: 1px solid #0ea5e9;
+  pointer-events: none;
+}
+
+.range-timeline .timeline-range.full {
+  background: transparent;
+  border: none;
+}
+
+.range-timeline .timeline-handle {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 8px;
+  margin-left: -4px;
+  background: #0ea5e9;
+  border-radius: 2px;
+  cursor: ew-resize;
+  z-index: 2;
+}
+
+.range-timeline .timeline-handle:hover {
+  background: #0284c7;
+}
+
+.range-timeline .timeline-handle-start { background: #16a34a; }
+.range-timeline .timeline-handle-end   { background: #dc2626; }
+.range-timeline .timeline-handle-start:hover { background: #15803d; }
+.range-timeline .timeline-handle-end:hover   { background: #b91c1c; }
+
 .event-item.note-event {
   background: #fef3c7;
   border-left: 3px solid #f59e0b;

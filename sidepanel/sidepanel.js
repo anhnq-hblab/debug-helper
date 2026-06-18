@@ -8,6 +8,10 @@ let currentSessionId = null;   // the session being viewed (from history or acti
 let activeSessionId = null;    // the currently recording session (set by service worker)
 let viewingHistorical = false; // true when viewing a past session from history
 let knownEventCount = 0;
+let rangeStartTs = null;  // event timestamp (ms) — start of selected range, null = unset
+let rangeEndTs = null;    // event timestamp (ms) — end of selected range, null = unset
+let rangeSessionStart = null; // session startTime (for display formatting)
+let currentSessionEndTime = null; // session endTime (for live recording = now)
 
 async function send(msg) {
   return chrome.runtime.sendMessage(msg);
@@ -27,6 +31,7 @@ $$('.tab').forEach(tab => {
       $('#note-bar').classList.remove('hidden');
     }
     if (tab.dataset.tab === 'history') loadHistory();
+    if (tab.dataset.tab === 'export') updateRangeExportBanner();
   });
 });
 
@@ -58,6 +63,10 @@ function applyFilter() {
     if (activeFilter === 'media') {
       // Media filter: show screenshots and video notes
       el.classList.toggle('hidden', el.dataset.type !== 'event:screenshot' && el.dataset.type !== 'event:video');
+    } else if (activeFilter === 'in-range') {
+      // Show only events within the active range (or all if no range)
+      const hasRange = rangeStartTs != null || rangeEndTs != null;
+      el.classList.toggle('hidden', hasRange && !el.classList.contains('in-range'));
     } else {
       el.classList.toggle('hidden', el.dataset.type !== activeFilter);
     }
@@ -178,13 +187,303 @@ function buildEventDetails(ev) {
     addRow(`<b>Video:</b> ${escHtml(ev.content)}`);
   }
   addRow(`<b>Time:</b> ${new Date(ev.timestamp).toLocaleString()}`);
+
   return container;
+}
+
+function isInRange(ev) {
+  if (rangeStartTs == null && rangeEndTs == null) return false;
+  if (rangeStartTs != null && ev.timestamp < rangeStartTs) return false;
+  if (rangeEndTs != null && ev.timestamp > rangeEndTs) return false;
+  return true;
+}
+
+function formatRangeOffset(ts) {
+  if (ts == null) return '?';
+  const start = rangeSessionStart || 0;
+  const sec = (ts - start) / 1000;
+  if (sec < 0) sec = 0;
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function updateRangeBar() {
+  const bar = $('#range-bar');
+  const info = $('#range-info');
+  const rangeFilterBtn = $('#filter-btn-in-range');
+  if (rangeStartTs == null && rangeEndTs == null) {
+    bar.classList.add('hidden');
+    if (rangeFilterBtn) rangeFilterBtn.classList.add('hidden');
+    return;
+  }
+  if (rangeFilterBtn) rangeFilterBtn.classList.remove('hidden');
+  const start = formatRangeOffset(rangeStartTs);
+  const end = formatRangeOffset(rangeEndTs);
+  // Count events in range
+  const inRangeEvents = Array.from($$('#feed .event-item')).filter(el => {
+    const ts = parseInt(el.dataset.timestamp, 10);
+    if (rangeStartTs != null && ts < rangeStartTs) return false;
+    if (rangeEndTs != null && ts > rangeEndTs) return false;
+    return true;
+  }).length;
+  info.textContent = `Range: ${start} → ${end} (${inRangeEvents} events)`;
+  bar.classList.remove('hidden');
+}
+
+function refreshRangeHighlight() {
+  $$('#feed .event-item').forEach(el => {
+    const ts = parseInt(el.dataset.timestamp, 10);
+    const inRange = (rangeStartTs == null && rangeEndTs == null)
+      ? true
+      : ((rangeStartTs == null || ts >= rangeStartTs) &&
+         (rangeEndTs == null || ts <= rangeEndTs));
+    el.classList.toggle('in-range', inRange);
+  });
+  refreshRangeEndpointClass();
+  refreshRangeButtonText();
+}
+
+// Mark the start/end events so their range-action bar stays visible
+function refreshRangeEndpointClass() {
+  $$('#feed .event-item').forEach(el => {
+    const ts = parseInt(el.dataset.timestamp, 10);
+    el.classList.toggle('range-endpoint', ts === rangeStartTs || ts === rangeEndTs);
+    el.classList.toggle('range-start', ts === rangeStartTs);
+    el.classList.toggle('range-end', ts === rangeEndTs);
+    // Insert a small marker into the event if it's an endpoint
+    let marker = el.querySelector('.range-marker');
+    if (ts === rangeStartTs || ts === rangeEndTs) {
+      if (!marker) {
+        marker = document.createElement('span');
+        marker.className = 'range-marker';
+        el.insertBefore(marker, el.firstChild);
+      }
+      marker.textContent = ts === rangeStartTs ? '▶ Start' : '◀ End';
+      marker.className = `range-marker ${ts === rangeStartTs ? 'range-marker-start' : 'range-marker-end'}`;
+    } else if (marker) {
+      marker.remove();
+    }
+  });
+}
+
+// Update button text to show ✓ when this event is a range endpoint
+function refreshRangeButtonText() {
+  $$('#feed .event-item .event-range-actions').forEach(bar => {
+    const el = bar.closest('.event-item');
+    const ts = parseInt(el.dataset.timestamp, 10);
+    const btns = bar.querySelectorAll('button');
+    if (btns[0]) btns[0].textContent = rangeStartTs === ts ? '✓ Start' : 'Set as start';
+    if (btns[1]) btns[1].textContent = rangeEndTs === ts ? '✓ End' : 'Set as end';
+  });
+}
+
+// ========== Range Timeline (visual range selector) ==========
+
+// Render the timeline with event ticks. Called when feed loads or session changes.
+function renderRangeTimeline(events) {
+  const tl = $('#range-timeline');
+  const ticksEl = $('#timeline-ticks');
+  const labelStart = $('#timeline-label-start');
+  const labelEnd = $('#timeline-label-end');
+  if (!tl || !ticksEl) return;
+
+  if (!rangeSessionStart || !events || events.length === 0) {
+    tl.classList.add('hidden');
+    return;
+  }
+  tl.classList.remove('hidden');
+
+  // Compute session duration (live recording has no endTime → use now)
+  const sessionEnd = (activeSessionId && currentSessionId === activeSessionId)
+    ? Date.now()
+    : (currentSessionEndTime || Date.now());
+  const durationMs = Math.max(sessionEnd - rangeSessionStart, 1000);
+
+  // Update labels
+  labelStart.textContent = '0:00';
+  labelEnd.textContent = formatDuration(durationMs);
+
+  // Place event ticks
+  ticksEl.innerHTML = '';
+  // Thin out ticks if too many (avoid DOM bloat for long sessions)
+  const maxTicks = 200;
+  const step = Math.max(1, Math.floor(events.length / maxTicks));
+  for (let i = 0; i < events.length; i += step) {
+    const ev = events[i];
+    const offset = ((ev.timestamp - rangeSessionStart) / durationMs) * 100;
+    const tick = document.createElement('div');
+    tick.className = `timeline-tick event-${ev.type.split(':').pop()}`;
+    tick.style.left = `${offset}%`;
+    tick.title = `${new Date(ev.timestamp).toLocaleTimeString()} · ${ev.type}`;
+    ticksEl.appendChild(tick);
+  }
+
+  refreshTimelineRange();
+}
+
+// Re-render the timeline by reading timestamps from the existing feed DOM.
+// Used for live updates (cheaper than re-querying storage).
+function renderRangeTimelineFromFeed() {
+  if (!rangeSessionStart) return;
+  const items = Array.from($$('#feed .event-item'));
+  if (items.length === 0) return;
+  // Reconstruct minimal event array from DOM
+  const events = items.map(el => ({
+    type: el.dataset.type,
+    timestamp: parseInt(el.dataset.timestamp, 10),
+  }));
+  renderRangeTimeline(events);
+}
+
+// Position the range highlight + handles based on rangeStartTs/rangeEndTs
+function refreshTimelineRange() {
+  const rangeEl = $('#timeline-range');
+  const handleStart = $('#timeline-handle-start');
+  const handleEnd = $('#timeline-handle-end');
+  if (!rangeEl || !handleStart || !handleEnd) return;
+
+  // For active recording, endTime is null → use now() for live duration
+  const sessionEnd = (activeSessionId && currentSessionId === activeSessionId)
+    ? Date.now()
+    : (currentSessionEndTime || Date.now());
+  const durationMs = Math.max(sessionEnd - rangeSessionStart, 1);
+
+  // No range → show full session, no filter
+  if (rangeStartTs == null && rangeEndTs == null) {
+    rangeEl.classList.add('full');
+    rangeEl.style.left = '0%';
+    rangeEl.style.width = '100%';
+    handleStart.style.left = '0%';
+    handleEnd.style.left = '100%';
+    return;
+  }
+  rangeEl.classList.remove('full');
+
+  const startOffset = rangeStartTs != null
+    ? Math.max(0, Math.min(100, ((rangeStartTs - rangeSessionStart) / durationMs) * 100))
+    : 0;
+  const endOffset = rangeEndTs != null
+    ? Math.max(0, Math.min(100, ((rangeEndTs - rangeSessionStart) / durationMs) * 100))
+    : 100;
+
+  rangeEl.style.left = `${startOffset}%`;
+  rangeEl.style.width = `${endOffset - startOffset}%`;
+  handleStart.style.left = `${startOffset}%`;
+  handleEnd.style.left = `${endOffset}%`;
+}
+
+function formatDuration(ms) {
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// Wire up drag on the two handles
+function initRangeTimelineDrag() {
+  const track = $('#timeline-track');
+  if (!track) return;
+  let activeHandle = null; // 'start' | 'end'
+  let trackRect = null;
+
+  const onMouseDown = (e) => {
+    const handle = e.target.closest('.timeline-handle');
+    if (handle) {
+      activeHandle = handle.dataset.handle;
+      e.preventDefault();
+    } else {
+      // Click on track → set range to a small window around click point
+      trackRect = track.getBoundingClientRect();
+      const pct = (e.clientX - trackRect.left) / trackRect.width;
+      const sessionEnd = (activeSessionId && currentSessionId === activeSessionId)
+        ? Date.now()
+        : (currentSessionEndTime || Date.now());
+      const durationMs = sessionEnd - rangeSessionStart;
+      const clickTs = rangeSessionStart + pct * durationMs;
+      const windowMs = Math.min(5000, durationMs * 0.05);
+      rangeStartTs = Math.round(clickTs - windowMs / 2);
+      rangeEndTs = Math.round(clickTs + windowMs / 2);
+      activeHandle = null;
+      onRangeChanged();
+    }
+    trackRect = track.getBoundingClientRect();
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
+  const onMouseMove = (e) => {
+    if (!trackRect) return;
+    const pct = Math.max(0, Math.min(1, (e.clientX - trackRect.left) / trackRect.width));
+    const sessionEnd = (activeSessionId && currentSessionId === activeSessionId)
+      ? Date.now()
+      : (currentSessionEndTime || Date.now());
+    const durationMs = sessionEnd - rangeSessionStart;
+    const ts = rangeSessionStart + pct * durationMs;
+
+    if (activeHandle === 'start') {
+      rangeStartTs = Math.round(ts);
+      if (rangeEndTs != null && rangeStartTs > rangeEndTs) rangeStartTs = rangeEndTs;
+    } else if (activeHandle === 'end') {
+      rangeEndTs = Math.round(ts);
+      if (rangeStartTs != null && rangeEndTs < rangeStartTs) rangeEndTs = rangeStartTs;
+    }
+    onRangeChanged();
+  };
+
+  const onMouseUp = () => {
+    activeHandle = null;
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', onMouseUp);
+  };
+
+  track.addEventListener('mousedown', onMouseDown);
+}
+
+// Single update path for all range changes (used by handles, buttons, click)
+function onRangeChanged() {
+  updateRangeBar();
+  refreshRangeHighlight();
+  refreshTimelineRange();
+}
+
+// Replace the older setRangeStart/setRangeEnd/clearRange to use the unified path
+function setRangeStart(ts) {
+  if (rangeEndTs != null && ts > rangeEndTs) {
+    rangeStartTs = rangeEndTs;
+    rangeEndTs = ts;
+  } else {
+    rangeStartTs = ts;
+  }
+  onRangeChanged();
+}
+function setRangeEnd(ts) {
+  if (rangeStartTs != null && ts < rangeStartTs) {
+    rangeEndTs = rangeStartTs;
+    rangeStartTs = ts;
+  } else {
+    rangeEndTs = ts;
+  }
+  onRangeChanged();
+}
+function clearRange() {
+  rangeStartTs = null;
+  rangeEndTs = null;
+  onRangeChanged();
 }
 
 function renderEvent(ev) {
   const div = document.createElement('div');
   div.className = 'event-item' + (ev.type === 'event:note' ? ' note-event' : '') + (ev.type === 'event:screenshot' ? ' screenshot-event' : '') + (ev.type === 'event:video' ? ' video-event' : '');
   div.dataset.type = ev.type;
+  div.dataset.timestamp = ev.timestamp;
+  if (isInRange(ev)) div.classList.add('in-range');
+  // Mark network errors (4xx/5xx/0) so they can be styled distinctly
+  if (ev.type.includes('network') && (ev.status >= 400 || ev.status === 0)) {
+    div.classList.add('event-error-network');
+  }
   const t = new Date(ev.timestamp);
   const time = t.toLocaleTimeString() + '.' + String(t.getMilliseconds()).padStart(3, '0');
   div.innerHTML = `<span class="time">${time}</span> <span class="badge ${badgeClass(ev.type)}">${ev.type.split(':').pop()}</span><div class="detail">${eventLabel(ev)}</div>`;
@@ -268,7 +567,41 @@ function renderEvent(ev) {
     }
   }
 
+  // Range actions bar — ALWAYS visible on every event so the user can
+  // mark a range without first expanding the event detail.
+  div.appendChild(buildRangeActions(ev));
+
   return div;
+}
+
+// Small "Set as start/end" button bar — used inline below screenshot/video thumbnails
+// since those event types don't have an expandable detail panel.
+function buildRangeActions(ev) {
+  const actions = document.createElement('div');
+  actions.className = 'event-range-actions';
+  // For video events, "Set as end" should use the END of the recording (start + duration)
+  // so the entire video content is included in the range.
+  const isVideo = ev.type === 'event:video';
+  const endTs = isVideo && ev.videoDurationMs
+    ? ev.timestamp + ev.videoDurationMs
+    : ev.timestamp;
+  const startBtn = document.createElement('button');
+  startBtn.className = 'btn btn-sm';
+  startBtn.textContent = rangeStartTs === ev.timestamp ? '✓ Start' : 'Set as start';
+  startBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setRangeStart(ev.timestamp);
+  });
+  const endBtn = document.createElement('button');
+  endBtn.className = 'btn btn-sm';
+  endBtn.textContent = rangeEndTs === endTs ? '✓ End' : (isVideo ? 'Set as end (video end)' : 'Set as end');
+  endBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setRangeEnd(endTs);
+  });
+  actions.appendChild(startBtn);
+  actions.appendChild(endBtn);
+  return actions;
 }
 
 async function loadFeed() {
@@ -287,6 +620,8 @@ async function loadFeed() {
     statusEl.className = 'status-badge recording';
     activeSessionId = state.session.id;
     currentSessionId = state.session.id;
+    rangeSessionStart = state.session.startTime;
+    currentSessionEndTime = state.session.endTime || Date.now();
     viewingHistorical = false;
     if (onFeedTab) noteBar.classList.remove('hidden');
   } else if (state.session) {
@@ -297,6 +632,8 @@ async function loadFeed() {
       statusEl.textContent = 'Session ended';
       statusEl.className = 'status-badge';
       currentSessionId = state.session.id;
+      rangeSessionStart = state.session.startTime;
+      currentSessionEndTime = state.session.endTime;
       activeSessionId = null;
       loadHistory(); // refresh history list
     } else if (!viewingHistorical) {
@@ -304,6 +641,8 @@ async function loadFeed() {
       statusEl.textContent = state.session.endTime ? 'Last session' : 'Idle';
       statusEl.className = 'status-badge';
       currentSessionId = state.session.id;
+      rangeSessionStart = state.session.startTime;
+      currentSessionEndTime = state.session.endTime || Date.now();
     } else {
       statusEl.textContent = 'Viewing history';
       statusEl.className = 'status-badge';
@@ -350,6 +689,8 @@ async function loadFeed() {
     knownEventCount = events.length;
     applyFilter();
     renderGallery(cachedScreenshots);
+    renderRangeTimeline(events);
+    if (rangeStartTs != null || rangeEndTs != null) updateRangeBar();
   } else {
     // Update existing feed thumbnails with latest screenshot data (e.g. after annotation)
     $$('.feed-screenshot-thumb').forEach(thumb => {
@@ -412,6 +753,18 @@ $('#btn-add-note').addEventListener('click', addNote);
 $('#btn-add-note').disabled = true;
 $('#note-input').addEventListener('input', () => {
   $('#btn-add-note').disabled = !$('#note-input').value.trim();
+});
+
+// Range banner controls
+$('#btn-range-clear').addEventListener('click', clearRange);
+$('#btn-range-export').addEventListener('click', () => {
+  // Switch to Export tab — range is read by getExportFilters() on generate
+  $$('.tab').forEach(t => t.classList.remove('active'));
+  $$('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelector('.tab[data-tab="export"]').classList.add('active');
+  $('#tab-export').classList.add('active');
+  $('#filters').classList.add('hidden');
+  updateRangeExportBanner();
 });
 $('#note-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') addNote();
@@ -507,11 +860,16 @@ async function startVideoRecording(sourceKind = 'tab') {
     videoSourceKind = sourceKind;
     videoChunks = [];
     videoSessionId = currentSessionId;
+    // Capture start time so the video event marks the BEGINNING of the recording
+    // (not the stop time, which would skip the video content when used as a range anchor)
+    const videoStartTime = Date.now();
     videoRecorder = new MediaRecorder(videoStream, { mimeType: 'video/webm;codecs=vp9' });
     videoRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) videoChunks.push(e.data);
     };
     videoRecorder.onstop = async () => {
+      const videoStopTime = Date.now();
+      const videoDurationMs = videoStopTime - videoStartTime;
       const blob = new Blob(videoChunks, { type: 'video/webm' });
       videoChunks = [];
       const videoId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -525,7 +883,9 @@ async function startVideoRecording(sourceKind = 'tab') {
             sessionId: videoSessionId,
             mediaType: 'video',
             videoBlob: blob,
-            timestamp: Date.now()
+            videoStartTime,
+            videoDurationMs,
+            timestamp: videoStartTime
           });
           tx.oncomplete = () => resolve();
           tx.onerror = () => reject(tx.error);
@@ -541,9 +901,11 @@ async function startVideoRecording(sourceKind = 'tab') {
 
         const videoEvent = {
           type: 'event:video',
-          content: `Video recorded (${(blob.size / 1024 / 1024).toFixed(1)} MB)`,
+          content: `Video recorded (${(blob.size / 1024 / 1024).toFixed(1)} MB, ${(videoDurationMs / 1000).toFixed(1)}s)`,
           videoId,
-          timestamp: Date.now(),
+          videoStartTime,
+          videoDurationMs,
+          timestamp: videoStartTime,  // mark START of recording, not stop
           _sessionId: sid
         };
         // Try sending through service worker buffer first (avoids race with flushBuffer)
@@ -746,6 +1108,8 @@ function viewSession(sessionId) {
   currentSessionId = sessionId;
   viewingHistorical = sessionId !== activeSessionId;
   knownEventCount = -1; // force reload
+  // Reset range — old timestamps wouldn't match new session's events
+  clearRange();
   // Switch to feed tab
   $$('.tab').forEach(t => t.classList.remove('active'));
   $$('.tab-content').forEach(t => t.classList.remove('active'));
@@ -757,9 +1121,16 @@ function viewSession(sessionId) {
 }
 
 async function loadFeedForSession(sessionId) {
-  const session = await send({ type: 'session:get' });
-  const sid = sessionId || session?.session?.id;
-  if (!sid) return;
+  if (!sessionId) return;
+  const sid = sessionId;
+  // Read THIS session's metadata directly from storage (session:get would return
+  // the current session, not the historical one we're viewing)
+  const sessionData = await chrome.storage.local.get('session:' + sid);
+  const sessionMeta = sessionData['session:' + sid];
+  if (sessionMeta) {
+    rangeSessionStart = sessionMeta.startTime;
+    currentSessionEndTime = sessionMeta.endTime || Date.now();
+  }
 
   const all = await chrome.storage.local.get(null);
   let events = [];
@@ -779,6 +1150,7 @@ async function loadFeedForSession(sessionId) {
   knownEventCount = events.length;
   applyFilter();
   renderGallery(cachedScreenshots);
+  renderRangeTimeline(events);
 }
 
 async function loadScreenshotsForSession(sessionId) {
@@ -914,7 +1286,24 @@ function getExportFilters() {
   delete filters.errorsOnly;
   filters.network = all || errors;
   filters.networkErrorsOnly = errors && !all;
+  // Pass range if active (lib/export.js uses these to filter events + screenshots)
+  if (rangeStartTs != null) filters.rangeStartTs = rangeStartTs;
+  if (rangeEndTs != null) filters.rangeEndTs = rangeEndTs;
   return filters;
+}
+
+// Show a banner in the Export tab if a range is active
+function updateRangeExportBanner() {
+  const banner = $('#export-range-banner');
+  if (!banner) return;
+  if (rangeStartTs == null && rangeEndTs == null) {
+    banner.classList.add('hidden');
+    return;
+  }
+  const start = formatRangeOffset(rangeStartTs);
+  const end = formatRangeOffset(rangeEndTs);
+  banner.textContent = `Filtering to range: ${start} → ${end}`;
+  banner.classList.remove('hidden');
 }
 
 async function generatePreview(format) {
@@ -954,6 +1343,8 @@ async function generatePreview(format) {
     const sizeKB = (new Blob([lastExportText]).size / 1024).toFixed(1);
     $('#preview-info').textContent = `${format.toUpperCase()} · ${sizeKB} KB`;
     $('#export-preview-wrap').classList.remove('hidden');
+    // Show "Play videos" button if the current session has any videos
+    updatePlayVideosButton();
   } finally {
     const labels = { markdown: 'Preview Markdown', json: 'Preview JSON', toon: 'Preview TOON' };
     btn.textContent = labels[format];
@@ -1005,6 +1396,59 @@ $('#btn-debug-events').addEventListener('click', async () => {
   $('#export-preview-wrap').classList.remove('hidden');
   $('#preview-info').textContent = 'DEBUG';
 });
+
+function updatePlayVideosButton() {
+  const btn = $('#btn-play-videos');
+  if (!btn) return;
+  const hasVideos = cachedScreenshots.some(s => s.mediaType === 'video' && s.videoBlob);
+  btn.style.display = hasVideos ? '' : 'none';
+}
+
+$('#btn-play-videos').addEventListener('click', () => {
+  const videos = cachedScreenshots
+    .filter(s => s.mediaType === 'video' && s.videoBlob)
+    .sort((a, b) => a.timestamp - b.timestamp);
+  if (videos.length === 0) return;
+  if (videos.length === 1) {
+    openVideoPopup(videos[0]);
+  } else {
+    // Open a picker window for multiple videos
+    openVideoPicker(videos);
+  }
+});
+
+function openVideoPopup(video) {
+  const blobUrl = URL.createObjectURL(video.videoBlob);
+  const w = window.open('', '_blank', 'width=900,height=700');
+  w.document.title = 'Debug Helper - Video';
+  w.document.body.style.cssText = 'margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh';
+  const player = w.document.createElement('video');
+  player.src = blobUrl;
+  player.controls = true;
+  player.autoplay = true;
+  player.style.maxWidth = '100%';
+  player.style.maxHeight = '100%';
+  w.document.body.appendChild(player);
+}
+
+function openVideoPicker(videos) {
+  const w = window.open('', '_blank', 'width=400,height=300');
+  w.document.title = 'Debug Helper - Pick video';
+  w.document.body.style.cssText = 'margin:0;padding:12px;font-family:system-ui;background:#1a1a1a;color:#eee';
+  w.document.body.innerHTML = '<h3 style="margin:0 0 8px">Pick a video</h3><div id="list" style="display:flex;flex-direction:column;gap:6px"></div>';
+  const list = w.document.getElementById('list');
+  videos.forEach((v, i) => {
+    const ts = new Date(v.timestamp).toLocaleString();
+    const btn = w.document.createElement('button');
+    btn.textContent = `Video ${i + 1} — ${ts}`;
+    btn.style.cssText = 'padding:8px 12px;background:#0ea5e9;color:white;border:none;border-radius:4px;cursor:pointer;text-align:left';
+    btn.addEventListener('click', () => {
+      w.close();
+      openVideoPopup(v);
+    });
+    list.appendChild(btn);
+  });
+}
 
 $('#btn-copy').addEventListener('click', async () => {
   if (!lastExportText) return;
@@ -1085,6 +1529,8 @@ chrome.storage.onChanged.addListener((changes) => {
           if (autoScroll) $('#tab-feed').scrollTop = $('#tab-feed').scrollHeight;
           // Refresh gallery when new media events arrive
           if (hasScreenshot) loadScreenshots();
+          // Refresh timeline ticks (capped at 200, cheap)
+          renderRangeTimelineFromFeed();
         }
       }
     }
@@ -1112,6 +1558,8 @@ async function loadSessionState() {
     activeSessionId = state.session.id;
     if (currentSessionId !== state.session.id) {
       currentSessionId = state.session.id;
+      rangeSessionStart = state.session.startTime;
+      clearRange(); // range from old session is meaningless
       viewingHistorical = false;
       knownEventCount = 0;
       $('#feed').innerHTML = '';
@@ -1147,6 +1595,7 @@ async function loadSessionState() {
 
 // Initial load — check if popup requested a specific session
 (async () => {
+  initRangeTimelineDrag();
   const { viewSessionId } = await chrome.storage.local.get('viewSessionId');
   if (viewSessionId) {
     await chrome.storage.local.remove('viewSessionId');
